@@ -20,6 +20,7 @@ from ..adapters.storage import StorageRepository
 from ..domain.hashing import build_execution_envelope, canonical_json, compute_payload_sha256
 from ..domain.models import AuditDecision, InterceptRequest
 from ..domain.policy_catalog import POL_FAIL_CLOSED, POL_POLICY_NOT_FOUND
+from ..domain.policy_corpus import POL_HITL_THRESHOLD
 from .layer1_engine import Layer1Engine
 from .layer2_contract import Layer2Auditor, Layer2Verdict
 
@@ -41,6 +42,11 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def scoped_idempotency_key(agent_id: str, idempotency_key: str) -> str:
+    """Idempotency keys are namespaced per agent so one agent can never read another's decision."""
+    return f"{agent_id}::{idempotency_key}"
+
+
 class ProxyService:
     def __init__(
         self,
@@ -57,8 +63,7 @@ class ProxyService:
 
     @staticmethod
     def _scoped_key(req: InterceptRequest) -> str:
-        # Idempotency keys are namespaced per agent so one agent can never read another's decision.
-        return f"{req.agent_id}::{req.idempotency_key}"
+        return scoped_idempotency_key(req.agent_id, req.idempotency_key)
 
     @asynccontextmanager
     async def _single_flight(self, key: str):
@@ -132,6 +137,20 @@ class ProxyService:
                 return await self.storage.save_idempotent_decision(scoped_key, decision)
             return decision
 
+        async def escalate(layer_decided: str, why: str) -> AuditDecision:
+            approval_id = await self.storage.create_pending_approval(
+                audit_id=audit_id, reservation_id=l1.reservation_id,
+                canonical_payload_json=canonical_json(envelope), payload_sha256=payload_sha256,
+                request_json=req.model_dump_json(exclude={"attachment_base64"}),
+            )
+            return await finalize(
+                decide(
+                    verdict="ESCALATE", layer_decided=layer_decided, risk_score=risk, reason=why,
+                    policy_citations=citations, l1_latency_ms=l1.latency_ms, executed=False,
+                    approval_id=approval_id, **l2_fields,
+                )
+            )
+
         policy = await self.storage.get_policy(req.policy_id)
         if policy is None:  # fail closed on unknown policy
             return await finalize(
@@ -189,18 +208,16 @@ class ProxyService:
                         )
                     )
                 else:  # ESCALATE → park the sealed envelope for HITL; budget stays RESERVED (held)
-                    approval_id = await self.storage.create_pending_approval(
-                        audit_id=audit_id, reservation_id=l1.reservation_id,
-                        canonical_payload_json=canonical_json(envelope), payload_sha256=payload_sha256,
-                        request_json=req.model_dump_json(exclude={"attachment_base64"}),
-                    )
-                    return await finalize(
-                        decide(
-                            verdict="ESCALATE", layer_decided="L2_GEMINI_AUDITOR", risk_score=risk,
-                            reason=l2.reason, policy_citations=citations, l1_latency_ms=l1.latency_ms,
-                            executed=False, approval_id=approval_id, **l2_fields,
-                        )
-                    )
+                    return await escalate("L2_GEMINI_AUDITOR", l2.reason)
+
+        # ---- Deterministic HITL threshold (defense in depth: holds even if Layer 2 is disabled/unavailable)
+        if not shadow and verdict == "ALLOW" and req.amount_inr > policy.auto_approve_threshold_inr:
+            citations = list(dict.fromkeys(citations + [POL_HITL_THRESHOLD]))
+            return await escalate(
+                layer if l2 is not None else "L1_DETERMINISTIC",
+                f"₹{req.amount_inr:,.2f} exceeds auto-approve threshold ₹{policy.auto_approve_threshold_inr:,.2f}; "
+                "Finance Manager HITL approval required.",
+            )
 
         # ---- Execute the sealed envelope via the vault
         try:

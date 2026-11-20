@@ -32,11 +32,16 @@ class Settings(BaseSettings):
     l2_auditor_model: str = "gemini-3.5-flash-lite"
     l2_text_timeout_s: float = 2.5  # CLAUDE.md invariant 8: >2.5s → fail-closed ESCALATE
     l2_multimodal_timeout_s: float = 4.0
-    l2_service_tier: str = ""  # "" = API default; "priority" lowers latency on paid tiers (billed at premium)
+    l2_service_tier: str = ""  # "" = API default; e.g. "priority" (paid tiers, premium billing; benchmark first)
     policy_compiler_model: str = "gemini-3.6-flash"
     policy_compiler_fallback_model: str = "gemini-3.5-flash-lite"
     embedding_model: str = "gemini-embedding-2"
     policy_embeddings_cache_path: str = str(BACKEND_DIR / "policy_embeddings_cache.json")
+
+    # Google ADK agent + HITL (Slice 3)
+    agent_model: str = "gemini-3.5-flash-lite"
+    praxis_reviewer_token: str = ""  # if set, POST /v1/approvals/{id}/decide requires X-Reviewer-Token
+    demo_pdf_dir: str = str(ROOT_DIR / "evals" / "pdfs")
 
 
 @lru_cache

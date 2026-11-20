@@ -3,20 +3,32 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import hmac
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any, Literal, Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from fastapi.responses import FileResponse
+from pydantic import BaseModel, Field
 
 from .adapters.payment_vault import PaymentVault
 from .adapters.storage import SQLiteRepository, StorageRepository
+from .agent.fintech_agent import AgentModelUnavailableError, AgentRunResult, FinTechAgentRunner
 from .config import Settings, get_settings
 from .domain.models import AuditDecision, InterceptRequest, MetricsSummary, PolicyConfig
 from .services.gemini_client import get_genai_client
+from .services.hitl_service import (
+    ApprovalConflictError,
+    ApprovalIntegrityError,
+    ApprovalNotFoundError,
+    ApprovalSettlementError,
+    HitlService,
+)
 from .services.layer2_auditor import GeminiLayer2Auditor
 from .services.policy_compiler import CompileRequest, CompileResult, PolicyCompileError, PolicyCompiler
 from .services.policy_rag import PolicyRAG
@@ -29,9 +41,33 @@ _AUTO: Any = object()  # sentinel: build from settings
 WARMUP_TIMEOUT_S = 30.0  # free-tier cold starts can exceed 50s; never block boot on it
 
 
+DEMO_PDF_PRESETS = {
+    "clean_480": "invoice_clean_480.pdf",
+    "poisoned_48000": "invoice_poisoned_480_to_48000.pdf",
+}
+
+
 class DemoResetRequest(BaseModel):
     agent_id: Optional[str] = None
     windows_only: bool = False
+
+
+class DecideRequest(BaseModel):
+    decision: Literal["APPROVE", "REJECT"]
+    reviewer_id: str = Field(min_length=1, max_length=128)
+    note: str = Field(default="", max_length=1000)
+
+
+class AgentRunRequest(BaseModel):
+    prompt: str = Field(min_length=1, max_length=4000)
+    untrusted_context: Optional[str] = Field(default=None, max_length=20000)
+    attachment_base64: Optional[str] = None
+    attachment_mime: Optional[str] = None
+    policy_id: str = "default-fintech-treasury"
+    contact_changed_hours_ago: Optional[float] = Field(default=None, ge=0)
+    destination_mode: Optional[Literal["original_source", "alternate_account"]] = None
+    simulate_timeout: bool = False
+    preset_pdf: Optional[Literal["clean_480", "poisoned_48000"]] = None
 
 
 def build_gemini_services(settings: Settings, storage: StorageRepository):
@@ -62,6 +98,7 @@ def create_app(
     vault: Optional[PaymentVault] = None,
     layer2_auditor: Any = _AUTO,
     policy_compiler: Any = _AUTO,
+    agent_runner: Any = _AUTO,
 ) -> FastAPI:
     settings = settings or get_settings()
     storage = storage or SQLiteRepository(settings.praxis_db_path)
@@ -71,6 +108,16 @@ def create_app(
         layer2_auditor = auto_auditor if layer2_auditor is _AUTO else layer2_auditor
         policy_compiler = auto_compiler if policy_compiler is _AUTO else policy_compiler
     proxy = ProxyService(storage=storage, vault=vault, layer2_auditor=layer2_auditor)
+    hitl = HitlService(storage=storage, vault=vault)
+    if agent_runner is _AUTO:
+        agent_runner = (
+            FinTechAgentRunner(
+                client=get_genai_client(settings.gemini_api_key), proxy_service=proxy, model=settings.agent_model
+            )
+            if settings.gemini_api_key
+            else None
+        )
+    pdf_dir = Path(settings.demo_pdf_dir)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -81,9 +128,10 @@ def create_app(
                 log.warning("Layer 2 warm-up failed: %s", exc)
         yield
 
-    app = FastAPI(title="Praxis Vaulted Execution Proxy", version="0.2.0", lifespan=lifespan)
+    app = FastAPI(title="Praxis Vaulted Execution Proxy", version="0.3.0", lifespan=lifespan)
     app.state.settings, app.state.storage, app.state.vault, app.state.proxy = settings, storage, vault, proxy
     app.state.layer2_auditor, app.state.policy_compiler = layer2_auditor, policy_compiler
+    app.state.hitl, app.state.agent_runner = hitl, agent_runner
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
@@ -99,6 +147,11 @@ def create_app(
         if not x_agent_token or not hmac.compare_digest(x_agent_token.encode(), expected.encode()):
             raise HTTPException(status_code=401, detail="Invalid or missing X-Agent-Token.")
 
+    def require_reviewer_token(x_reviewer_token: Optional[str] = Header(default=None)) -> None:
+        expected = settings.praxis_reviewer_token
+        if expected and not (x_reviewer_token and hmac.compare_digest(x_reviewer_token.encode(), expected.encode())):
+            raise HTTPException(status_code=401, detail="Invalid or missing X-Reviewer-Token.")
+
     @app.get("/health")
     async def health():
         return {
@@ -108,6 +161,7 @@ def create_app(
             "payment_vault": {"configured": vault.is_configured, "test_mode": vault.is_test_mode, "rail": "razorpay_test_mode"},
             "layer2_auditor": getattr(layer2_auditor, "model", None) or "disabled",
             "policy_compiler": getattr(policy_compiler, "model", None) or "disabled",
+            "adk_agent": getattr(agent_runner, "model", None) or "disabled",
             "region": settings.gcp_region,
         }
 
@@ -135,10 +189,76 @@ def create_app(
 
     @app.get("/v1/approvals")
     async def list_approvals(
-        status: Optional[Literal["PENDING", "APPROVED", "REJECTED", "EXECUTED", "EXPIRED"]] = None,
+        status: Optional[Literal["PENDING", "PROCESSING", "APPROVED", "REJECTED", "INTEGRITY_FAILED"]] = None,
         limit: int = Query(200, ge=1, le=1000),
     ):
         return await storage.list_approvals(status=status, limit=limit)
+
+    @app.post(
+        "/v1/approvals/{approval_id}/decide",
+        response_model=AuditDecision,
+        dependencies=[Depends(require_reviewer_token)],
+    )
+    async def decide_approval(approval_id: str, body: DecideRequest):
+        try:
+            return await hitl.decide_approval(approval_id, body.decision, body.reviewer_id, body.note)
+        except ApprovalNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except (ApprovalConflictError, ApprovalIntegrityError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ApprovalSettlementError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    @app.post("/v1/agent/run", response_model=AgentRunResult)
+    async def run_agent(body: AgentRunRequest):
+        if agent_runner is None:
+            raise HTTPException(status_code=503, detail="ADK agent unavailable (GEMINI_API_KEY not configured).")
+        attachment_b64, attachment_mime = body.attachment_base64, body.attachment_mime
+        if body.preset_pdf:
+            path = pdf_dir / DEMO_PDF_PRESETS[body.preset_pdf]
+            if not path.is_file():
+                raise HTTPException(status_code=404, detail=f"Preset PDF {path.name} not found.")
+            attachment_b64, attachment_mime = base64.b64encode(path.read_bytes()).decode(), "application/pdf"
+        try:
+            return await agent_runner.run(
+                body.prompt,
+                untrusted_context=body.untrusted_context,
+                attachment_base64=attachment_b64,
+                attachment_mime=attachment_mime,
+                policy_id=body.policy_id,
+                contact_changed_hours_ago=body.contact_changed_hours_ago,
+                destination_mode=body.destination_mode,
+                timeout_override_s=0.001 if body.simulate_timeout else None,
+            )
+        except AgentModelUnavailableError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except ValueError as exc:  # e.g. invalid base64 attachment
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    def _demo_pdfs() -> dict[str, Path]:
+        return {p.name: p for p in sorted(pdf_dir.glob("*.pdf"))} if pdf_dir.is_dir() else {}
+
+    @app.get("/v1/demo/pdfs")
+    async def list_demo_pdfs():
+        presets = {v: k for k, v in DEMO_PDF_PRESETS.items()}
+        return [
+            {
+                "name": name,
+                "preset": presets.get(name),
+                "size_bytes": path.stat().st_size,
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                "mime": "application/pdf",
+                "url": f"/v1/demo/pdfs/{name}",
+            }
+            for name, path in _demo_pdfs().items()
+        ]
+
+    @app.get("/v1/demo/pdfs/{name}")
+    async def get_demo_pdf(name: str):
+        path = _demo_pdfs().get(name)  # whitelist lookup: no path traversal
+        if path is None:
+            raise HTTPException(status_code=404, detail="Unknown demo PDF.")
+        return FileResponse(path, media_type="application/pdf", filename=name)
 
     @app.put("/v1/policies/{policy_id}", response_model=PolicyConfig)
     async def put_policy(policy_id: str, policy: PolicyConfig):

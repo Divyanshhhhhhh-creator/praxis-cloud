@@ -11,49 +11,13 @@ import pytest
 
 from app.config import Settings
 from app.domain.policy_catalog import default_policy
-from app.services.gemini_client import get_genai_client
 from app.services.layer2_auditor import FAIL_CLOSED_REASON, GeminiLayer2Auditor
 from app.services.policy_compiler import PolicyCompiler
-from app.services.policy_rag import PolicyRAG
 from tests.conftest import asgi_client, make_app
 
 PDF_DIR = Path(__file__).resolve().parents[2] / "evals" / "pdfs"
 LATENCIES: list[tuple[str, float, float]] = []
-# Test-only L2 budget for the SEMANTIC tests. Free-tier gemini-3.5-flash-lite latency was measured at
-# 1.5–14s, so these tests verify verdict correctness, not free-tier speed. The production defaults
-# (2.5s text / 4.0s multimodal → fail-closed ESCALATE) are pinned by
-# test_production_l2_budgets_are_fail_closed_defaults and exercised by the chaos timeout test.
-SEMANTIC_TEST_BUDGET_S = 20.0
-
 pytestmark = pytest.mark.gemini
-
-
-# ---------------------------------------------------------------- fixtures
-@pytest.fixture(scope="session")
-def settings():
-    s = Settings()
-    if not s.gemini_api_key:
-        pytest.skip("GEMINI_API_KEY not configured in root .env")
-    return s
-
-
-@pytest.fixture(scope="session")
-def genai_client(settings):
-    return get_genai_client(settings.gemini_api_key)
-
-
-@pytest.fixture(scope="session")
-def rag(settings, genai_client):
-    return PolicyRAG(genai_client, model=settings.embedding_model, cache_path=settings.policy_embeddings_cache_path)
-
-
-@pytest.fixture(scope="session")
-async def auditor(settings, genai_client, rag):
-    a = GeminiLayer2Auditor(genai_client, rag, model=settings.l2_auditor_model,
-                             text_timeout_s=SEMANTIC_TEST_BUDGET_S,
-                             multimodal_timeout_s=SEMANTIC_TEST_BUDGET_S)
-    await a.warmup()  # same warm-up the app lifespan performs at startup
-    return a
 
 
 @pytest.fixture

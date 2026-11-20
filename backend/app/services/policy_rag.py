@@ -13,6 +13,7 @@ import json
 import logging
 import re
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -24,6 +25,8 @@ from google.genai import types
 from ..domain.policy_corpus import POLICY_CORPUS, PolicyClause, corpus_fingerprint
 
 log = logging.getLogger("praxis.policy_rag")
+
+QUERY_CACHE_MAX_ENTRIES = 256
 
 
 @dataclass
@@ -46,6 +49,7 @@ class PolicyRAG:
         model: str = "gemini-embedding-2",
         cache_path: str | Path,
         query_timeout_s: float = 1.5,
+        query_cache_size: int = QUERY_CACHE_MAX_ENTRIES,
     ):
         self.client = client
         self.model = model
@@ -53,6 +57,12 @@ class PolicyRAG:
         self.query_timeout_s = query_timeout_s
         self._matrix: Optional[np.ndarray] = None  # (n_clauses, dims), L2-normalised
         self._index_lock = asyncio.Lock()
+        # LRU of query_text -> unit vector: repeated queries skip a gemini-embedding-2 call (free-tier RPM);
+        # every NEW query still hits the live embedding endpoint.
+        self._query_cache: OrderedDict[str, np.ndarray] = OrderedDict()
+        self._query_cache_size = query_cache_size
+        self.query_cache_hits = 0
+        self.query_cache_misses = 0
 
     # ------------------------------------------------------------------ index
     async def _embed(self, text: str, task_type: str) -> np.ndarray:
@@ -61,6 +71,19 @@ class PolicyRAG:
         )
         vec = np.asarray(resp.embeddings[0].values, dtype=np.float32)
         return vec / (np.linalg.norm(vec) or 1.0)
+
+    async def _embed_query(self, query_text: str) -> np.ndarray:
+        cached = self._query_cache.get(query_text)
+        if cached is not None:
+            self._query_cache.move_to_end(query_text)
+            self.query_cache_hits += 1
+            return cached
+        vec = await self._embed(query_text, "RETRIEVAL_QUERY")
+        self.query_cache_misses += 1
+        self._query_cache[query_text] = vec
+        if len(self._query_cache) > self._query_cache_size:
+            self._query_cache.popitem(last=False)  # evict least-recently-used
+        return vec
 
     def _load_cache(self, fingerprint: str) -> Optional[np.ndarray]:
         try:
@@ -116,7 +139,7 @@ class PolicyRAG:
         mode = "embedding"
         try:
             await asyncio.wait_for(self.ensure_index(), timeout=10.0)
-            qvec = await asyncio.wait_for(self._embed(query_text, "RETRIEVAL_QUERY"), timeout=self.query_timeout_s)
+            qvec = await asyncio.wait_for(self._embed_query(query_text), timeout=self.query_timeout_s)
             scores = (self._matrix @ qvec).tolist()
         except asyncio.TimeoutError:
             log.warning("gemini-embedding-2 timed out; Policy RAG using deterministic keyword fallback")

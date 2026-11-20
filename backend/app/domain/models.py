@@ -29,6 +29,8 @@ class InterceptRequest(BaseModel):
     contact_changed_hours_ago: Optional[float] = Field(default=None, ge=0, allow_inf_nan=False)
     attachment_base64: Optional[str] = None
     attachment_mime: Optional[str] = None
+    # Chaos/latency drill: may only TIGHTEN the Layer 2 budget (min with the configured budget), never loosen it.
+    timeout_override_s: Optional[float] = Field(default=None, gt=0, le=4.0, allow_inf_nan=False)
 
     @field_validator("payload")
     @classmethod

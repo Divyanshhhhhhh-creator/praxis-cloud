@@ -101,6 +101,21 @@ class StorageRepository(ABC):
     ) -> str: ...
     @abstractmethod
     async def list_approvals(self, status: Optional[str] = None, limit: int = 200) -> list[dict]: ...
+    @abstractmethod
+    async def get_approval(self, approval_id: str) -> Optional[dict]: ...
+    @abstractmethod
+    async def claim_approval(self, approval_id: str, reviewer_id: str) -> bool:
+        """Atomic compare-and-set PENDING -> PROCESSING. Only one reviewer/request can ever win."""
+    @abstractmethod
+    async def finalize_approval(
+        self, approval_id: str, *, status: str, reviewer_id: str, note: str = "",
+        settlement_txn_id: Optional[str] = None, decision_audit_id: Optional[str] = None,
+    ) -> None: ...
+    @abstractmethod
+    async def unclaim_approval(self, approval_id: str) -> None:
+        """PROCESSING -> PENDING (settlement failed; approval stays decidable)."""
+    @abstractmethod
+    async def update_idempotent_decision(self, idempotency_key: str, decision: AuditDecision) -> None: ...
 
     # Metrics
     @abstractmethod
@@ -185,6 +200,7 @@ class SQLiteRepository(StorageRepository):
             self._conn.execute("PRAGMA busy_timeout=5000")
             self._conn.execute("PRAGMA synchronous=NORMAL")
             self._conn.executescript(_SCHEMA)
+            self._migrate()
             self._seed_default_policy()
 
     def close(self) -> None:
@@ -192,6 +208,21 @@ class SQLiteRepository(StorageRepository):
             self._conn.close()
 
     # ------------------------------------------------------------------ helpers
+    _HITL_COLUMNS = {
+        "reviewer_id": "TEXT",
+        "decision_note": "TEXT",
+        "decided_at": "TEXT",
+        "settlement_txn_id": "TEXT",
+        "decision_audit_id": "TEXT",
+    }
+
+    def _migrate(self) -> None:
+        """Additive, idempotent schema migrations for DBs created by earlier slices."""
+        have = {r["name"] for r in self._conn.execute("PRAGMA table_info(hitl_approvals)")}
+        for col, typ in self._HITL_COLUMNS.items():
+            if col not in have:
+                self._conn.execute(f"ALTER TABLE hitl_approvals ADD COLUMN {col} {typ}")
+
     def _seed_default_policy(self) -> None:
         p = default_policy()
         self._conn.execute(
@@ -282,6 +313,17 @@ class SQLiteRepository(StorageRepository):
             return AuditDecision.model_validate_json(row["decision_json"])
 
         return await asyncio.to_thread(self._write_txn, _fn)
+
+    async def update_idempotent_decision(self, idempotency_key: str, decision: AuditDecision) -> None:
+        """Point an idempotency key at a newer decision (e.g. ESCALATE -> HITL_APPROVED) so agent retries see the outcome."""
+
+        def _fn(conn):
+            conn.execute(
+                "UPDATE idempotency SET audit_id = ?, decision_json = ? WHERE idempotency_key = ?",
+                (decision.audit_id, decision.model_dump_json(), idempotency_key),
+            )
+
+        await asyncio.to_thread(self._write_txn, _fn)
 
     # ------------------------------------------------------------------ budget ledger
     def _reserve_sync(self, agent_id: str, policy: PolicyConfig, amount_inr: float, enforce: bool) -> ReservationOutcome:
@@ -450,6 +492,44 @@ class SQLiteRepository(StorageRepository):
             item["request"] = json.loads(item.pop("request_json"))
             out.append(item)
         return out
+
+    async def get_approval(self, approval_id: str) -> Optional[dict]:
+        rows = await asyncio.to_thread(self._read, "SELECT * FROM hitl_approvals WHERE approval_id = ?", (approval_id,))
+        return dict(rows[0]) if rows else None
+
+    async def claim_approval(self, approval_id: str, reviewer_id: str) -> bool:
+        def _fn(conn):
+            cur = conn.execute(
+                "UPDATE hitl_approvals SET status = 'PROCESSING', reviewer_id = ? "
+                "WHERE approval_id = ? AND status = 'PENDING'",
+                (reviewer_id, approval_id),
+            )
+            return cur.rowcount == 1
+
+        return await asyncio.to_thread(self._write_txn, _fn)
+
+    async def finalize_approval(
+        self, approval_id: str, *, status: str, reviewer_id: str, note: str = "",
+        settlement_txn_id: Optional[str] = None, decision_audit_id: Optional[str] = None,
+    ) -> None:
+        def _fn(conn):
+            conn.execute(
+                "UPDATE hitl_approvals SET status = ?, reviewer_id = ?, decision_note = ?, decided_at = ?, "
+                "settlement_txn_id = ?, decision_audit_id = ? WHERE approval_id = ? AND status = 'PROCESSING'",
+                (status, reviewer_id, note, _utcnow_iso(), settlement_txn_id, decision_audit_id, approval_id),
+            )
+
+        await asyncio.to_thread(self._write_txn, _fn)
+
+    async def unclaim_approval(self, approval_id: str) -> None:
+        def _fn(conn):
+            conn.execute(
+                "UPDATE hitl_approvals SET status = 'PENDING', reviewer_id = NULL "
+                "WHERE approval_id = ? AND status = 'PROCESSING'",
+                (approval_id,),
+            )
+
+        await asyncio.to_thread(self._write_txn, _fn)
 
     # ------------------------------------------------------------------ metrics
     def _metrics_sync(self, agent_id: Optional[str], policy: PolicyConfig, policy_filter: Optional[str]) -> MetricsSummary:

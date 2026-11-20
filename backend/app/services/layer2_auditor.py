@@ -243,6 +243,8 @@ class GeminiLayer2Auditor:
         timeout_s = timeout_override_s or self.timeout_override_s or (
             self.multimodal_timeout_s if attachment is not None else self.text_timeout_s
         )
+        if req.timeout_override_s is not None:  # request-scoped override can only tighten
+            timeout_s = min(timeout_s, req.timeout_override_s)
         contents = self._build_contents(req, policy, envelope, payload_sha256, clause_ids, attachment)
         rag_info = dict(retrieved_policy_ids=retrieval.policy_ids, retrieval_mode=retrieval.mode)
         try:
