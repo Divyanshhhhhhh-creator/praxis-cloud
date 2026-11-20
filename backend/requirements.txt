@@ -8,3 +8,5 @@ pytest>=8.3
 pytest-asyncio>=0.24
 reportlab>=4.2
 pypdf>=5.0
+google-genai>=3.6
+numpy>=2.0

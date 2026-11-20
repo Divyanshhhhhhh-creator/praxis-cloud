@@ -1,7 +1,8 @@
 """Vaulted Execution Proxy orchestrator for POST /v1/intercept.
 
-Pipeline: idempotency → canonical SHA-256 seal → Layer 1 → (Layer 2 hook) → vault settle
-→ commit/release budget → persist audit + idempotency cache.
+Pipeline: idempotency → canonical SHA-256 seal → Layer 1 (atomic reservation) → Layer 2 Gemini
+auditor → {BLOCK: release | ESCALATE: hold for HITL | ALLOW: vault settle → commit}
+→ persist audit + idempotency cache.
 """
 
 from __future__ import annotations
@@ -10,38 +11,24 @@ import asyncio
 import time
 import uuid
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Literal, Optional, Protocol
+from typing import Optional
 
 from ..adapters.payment_vault import PaymentVault, SecurityIntegrityError
 from ..adapters.storage import StorageRepository
 from ..domain.hashing import build_execution_envelope, canonical_json, compute_payload_sha256
-from ..domain.models import AuditDecision, InterceptRequest, PolicyConfig
+from ..domain.models import AuditDecision, InterceptRequest
 from ..domain.policy_catalog import POL_FAIL_CLOSED, POL_POLICY_NOT_FOUND
-from .layer1_engine import Layer1Engine, Layer1Result
+from .layer1_engine import Layer1Engine
+from .layer2_contract import Layer2Auditor, Layer2Verdict
 
-L2_TIMEOUT_SECONDS = 2.5
+# Outer safety net only; the auditor enforces its own 2.5s (text) / 4.0s (multimodal) budget.
+L2_BACKSTOP_MARGIN_S = 3.0
 
 
 class IdempotencyConflictError(Exception):
     """Same idempotency_key replayed with a different payload."""
-
-
-# ---------------------------------------------------------------- Layer 2 hook (Slice 2)
-@dataclass
-class Layer2Verdict:
-    verdict: Literal["ALLOW", "BLOCK", "ESCALATE"]
-    risk_score: float
-    reason: str
-    citations: list[str] = field(default_factory=list)
-    latency_ms: float = 0.0
-
-
-class Layer2Auditor(Protocol):
-    async def audit(
-        self, *, req: InterceptRequest, policy: PolicyConfig, envelope: dict, payload_sha256: str, l1: Layer1Result
-    ) -> Layer2Verdict: ...
 
 
 @dataclass
@@ -61,13 +48,11 @@ class ProxyService:
         storage: StorageRepository,
         vault: PaymentVault,
         layer2_auditor: Optional[Layer2Auditor] = None,
-        l2_timeout_s: float = L2_TIMEOUT_SECONDS,
     ):
         self.storage = storage
         self.vault = vault
         self.layer1 = Layer1Engine(storage)
         self.layer2_auditor = layer2_auditor
-        self.l2_timeout_s = l2_timeout_s
         self._key_locks: dict[str, list] = {}
 
     @staticmethod
@@ -99,7 +84,6 @@ class ProxyService:
         payload_sha256 = compute_payload_sha256(envelope)
 
         async with self._single_flight(scoped_key):
-            # Step 1: idempotency
             cached = await self.storage.get_idempotent_decision(scoped_key)
             if cached is not None:
                 if cached.payload_sha256 != payload_sha256:
@@ -109,6 +93,19 @@ class ProxyService:
                 return InterceptOutcome(decision=cached, replayed=True)
             decision = await self._evaluate_and_execute(req, envelope, payload_sha256)
             return InterceptOutcome(decision=decision)
+
+    async def _run_layer2(self, **kw) -> Layer2Verdict:
+        t0 = time.perf_counter()
+        backstop = getattr(self.layer2_auditor, "max_timeout_s", 2.5) + L2_BACKSTOP_MARGIN_S
+        try:
+            return await asyncio.wait_for(self.layer2_auditor.audit(**kw), timeout=backstop)
+        except Exception as exc:  # auditor bug / backstop timeout → fail closed
+            return Layer2Verdict(
+                verdict="ESCALATE", risk_score=0.65,
+                reason=f"Fail-closed escalation: Layer 2 unavailable ({type(exc).__name__}); manual treasury approval required.",
+                citations=[POL_FAIL_CLOSED], latency_ms=round((time.perf_counter() - t0) * 1000, 3),
+                threat_category="NONE", fail_closed=True,
+            )
 
     async def _evaluate_and_execute(self, req: InterceptRequest, envelope: dict, payload_sha256: str) -> AuditDecision:
         audit_id = f"aud_{uuid.uuid4().hex}"
@@ -145,7 +142,7 @@ class ProxyService:
                 )
             )
 
-        # Step 3: Layer 1
+        # ---- Layer 1 (deterministic, atomic reservation)
         l1 = await self.layer1.evaluate(req, policy)
         shadow = policy.mode == "shadow"
         verdict, layer, risk, reason, citations = "ALLOW", "L1_DETERMINISTIC", 0.0, l1.reason, l1.citations
@@ -160,69 +157,65 @@ class ProxyService:
                         policy_citations=l1.citations, l1_latency_ms=l1.latency_ms, executed=False,
                     )
                 )
-            verdict, risk, reason = "SHADOW_FLAG", 1.0, f"[SHADOW MODE – would BLOCK] {l1.reason}"
+            verdict, risk, reason = "SHADOW_FLAG", 1.0, f"[SHADOW MODE – L1 would BLOCK] {l1.reason}"
 
-        # Step 4: Layer 2 hook (monotonic: may only tighten; fail-closed to ESCALATE)
-        l2_latency = 0.0
+        # ---- Layer 2 (Gemini; monotonic — may only tighten)
+        l2: Optional[Layer2Verdict] = None
+        l2_fields: dict = {}
         if self.layer2_auditor is not None:
-            t0 = time.perf_counter()
-            try:
-                l2 = await asyncio.wait_for(
-                    self.layer2_auditor.audit(
-                        req=req, policy=policy, envelope=envelope, payload_sha256=payload_sha256, l1=l1
-                    ),
-                    timeout=self.l2_timeout_s,
-                )
-            except Exception as exc:  # timeout, API error, malformed output → fail closed
-                l2 = Layer2Verdict("ESCALATE", 0.5, f"Layer 2 unavailable ({type(exc).__name__}); fail-closed to HITL.",
-                                   [POL_FAIL_CLOSED])
-            l2_latency = round(l2.latency_ms or (time.perf_counter() - t0) * 1000, 3)
-            if l2.verdict != "ALLOW":
+            l2 = await self._run_layer2(req=req, policy=policy, envelope=envelope, payload_sha256=payload_sha256, l1=l1)
+            l2_fields = dict(
+                l2_latency_ms=l2.latency_ms, threat_category=l2.threat_category,
+                invoice_extracted_total_inr=l2.invoice_extracted_total_inr, model_used=l2.model_used,
+            )
+            risk = max(risk, l2.risk_score)
+            if l2.verdict == "ALLOW":
+                if verdict == "ALLOW":
+                    layer = "L2_GEMINI_AUDITOR"
+                    reason = f"L1 passed; L2 ALLOW: {l2.reason}"
+            else:
                 citations = list(dict.fromkeys(citations + l2.citations))
-                risk = max(risk, l2.risk_score)
                 if shadow:
-                    verdict, reason = "SHADOW_FLAG", f"{reason} | [SHADOW MODE – L2 {l2.verdict}] {l2.reason}"
+                    if l1.passed:  # L2 is the layer that raised the flag
+                        layer, reason = "L2_GEMINI_AUDITOR", "L1 passed"
+                    verdict = "SHADOW_FLAG"
+                    reason = f"{reason} | [SHADOW MODE – L2 would {l2.verdict}] {l2.reason}"
                 elif l2.verdict == "BLOCK":
-                    if l1.reservation_id:
-                        await self.storage.release_budget_atomic(l1.reservation_id)
+                    await self.storage.release_budget_atomic(l1.reservation_id)  # zero budget leaked
                     return await finalize(
                         decide(
                             verdict="BLOCK", layer_decided="L2_GEMINI_AUDITOR", risk_score=risk, reason=l2.reason,
-                            policy_citations=citations, l1_latency_ms=l1.latency_ms, l2_latency_ms=l2_latency,
-                            executed=False,
+                            policy_citations=citations, l1_latency_ms=l1.latency_ms, executed=False, **l2_fields,
                         )
                     )
-                else:  # ESCALATE → park sealed payload for HITL; budget stays RESERVED (held)
-                    decision = decide(
-                        verdict="ESCALATE", layer_decided="L2_GEMINI_AUDITOR", risk_score=risk, reason=l2.reason,
-                        policy_citations=citations, l1_latency_ms=l1.latency_ms, l2_latency_ms=l2_latency,
-                        executed=False,
-                    )
-                    await self.storage.create_pending_approval(
+                else:  # ESCALATE → park the sealed envelope for HITL; budget stays RESERVED (held)
+                    approval_id = await self.storage.create_pending_approval(
                         audit_id=audit_id, reservation_id=l1.reservation_id,
                         canonical_payload_json=canonical_json(envelope), payload_sha256=payload_sha256,
                         request_json=req.model_dump_json(exclude={"attachment_base64"}),
                     )
-                    return await finalize(decision)
-            else:
-                risk = max(risk, l2.risk_score)
+                    return await finalize(
+                        decide(
+                            verdict="ESCALATE", layer_decided="L2_GEMINI_AUDITOR", risk_score=risk,
+                            reason=l2.reason, policy_citations=citations, l1_latency_ms=l1.latency_ms,
+                            executed=False, approval_id=approval_id, **l2_fields,
+                        )
+                    )
 
-        # Step 5: execute the sealed envelope via the vault
+        # ---- Execute the sealed envelope via the vault
         try:
             settlement = await self.vault.execute(audit_id=audit_id, payload=envelope, expected_sha256=payload_sha256)
         except Exception as exc:  # SecurityIntegrityError, SettlementError, or anything unexpected
             if l1.reservation_id:
                 await self.storage.release_budget_atomic(l1.reservation_id)
-            code = getattr(exc, "code", type(exc).__name__)
-            if isinstance(exc, SecurityIntegrityError):
-                code = "SECURITY_INTEGRITY"
+            code = "SECURITY_INTEGRITY" if isinstance(exc, SecurityIntegrityError) else getattr(exc, "code", type(exc).__name__)
             # Not cached under the idempotency key so the agent may safely retry the same key.
             return await finalize(
                 decide(
-                    verdict="BLOCK", layer_decided="L1_DETERMINISTIC", risk_score=risk,
+                    verdict="BLOCK", layer_decided=layer, risk_score=risk,
                     reason=f"Fail-closed: settlement aborted ({code}): {exc}. Reserved budget released.",
                     policy_citations=list(dict.fromkeys(citations + [POL_FAIL_CLOSED])),
-                    l1_latency_ms=l1.latency_ms, l2_latency_ms=l2_latency, executed=False,
+                    l1_latency_ms=l1.latency_ms, executed=False, **l2_fields,
                 ),
                 cache=False,
             )
@@ -230,11 +223,10 @@ class ProxyService:
         if l1.reservation_id:
             await self.storage.commit_budget_atomic(l1.reservation_id)
 
-        # Step 6: persist
         return await finalize(
             decide(
                 verdict=verdict, layer_decided=layer, risk_score=risk, reason=reason, policy_citations=citations,
-                l1_latency_ms=l1.latency_ms, l2_latency_ms=l2_latency, executed=True,
-                settlement_txn_id=settlement.settlement_txn_id, settlement_rail=settlement.settlement_rail,
+                l1_latency_ms=l1.latency_ms, executed=True, settlement_txn_id=settlement.settlement_txn_id,
+                settlement_rail=settlement.settlement_rail, **l2_fields,
             )
         )

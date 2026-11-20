@@ -78,6 +78,10 @@ class AuditDecision(BaseModel):
     settlement_txn_id: Optional[str] = None
     settlement_rail: Optional[str] = None
     created_at: str
+    approval_id: Optional[str] = None
+    threat_category: Optional[str] = None
+    invoice_extracted_total_inr: Optional[float] = None
+    model_used: Optional[str] = None
 
 
 class WindowUsage(BaseModel):

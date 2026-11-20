@@ -43,30 +43,28 @@ def vault():
     return v
 
 
-def _make_app(storage, vault):
+def make_app(storage, vault, *, layer2_auditor=None, policy_compiler=None):
+    """Layer 1 tests run with Layer 2 disabled (pure deterministic engine); Layer 2 tests inject it."""
     settings = Settings(praxis_agent_token=TEST_TOKEN, praxis_db_path=storage.db_path)
-    return create_app(settings=settings, storage=storage, vault=vault)
+    return create_app(
+        settings=settings, storage=storage, vault=vault, layer2_auditor=layer2_auditor, policy_compiler=policy_compiler
+    )
+
+
+def asgi_client(app) -> httpx.AsyncClient:
+    return httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://praxis.test",
+        headers={"X-Agent-Token": TEST_TOKEN}, timeout=120.0,
+    )
 
 
 @pytest.fixture
 async def client(storage, vault):
-    app = _make_app(storage, vault)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://praxis.test",
-        headers={"X-Agent-Token": TEST_TOKEN}, timeout=30.0,
-    ) as c:
+    async with asgi_client(make_app(storage, vault)) as c:
         yield c
 
 
 @pytest.fixture
 def make_client(storage):
     """Factory for a client bound to a custom vault (e.g. an unreachable rail)."""
-
-    def _factory(custom_vault):
-        app = _make_app(storage, custom_vault)
-        return httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://praxis.test",
-            headers={"X-Agent-Token": TEST_TOKEN}, timeout=30.0,
-        )
-
-    return _factory
+    return lambda custom_vault: asgi_client(make_app(storage, custom_vault))

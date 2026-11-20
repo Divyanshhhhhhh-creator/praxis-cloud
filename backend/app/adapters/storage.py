@@ -100,7 +100,7 @@ class StorageRepository(ABC):
         request_json: str,
     ) -> str: ...
     @abstractmethod
-    async def list_pending_approvals(self, status: str = "PENDING") -> list[dict]: ...
+    async def list_approvals(self, status: Optional[str] = None, limit: int = 200) -> list[dict]: ...
 
     # Metrics
     @abstractmethod
@@ -435,11 +435,21 @@ class SQLiteRepository(StorageRepository):
 
         return await asyncio.to_thread(self._write_txn, _fn)
 
-    async def list_pending_approvals(self, status: str = "PENDING") -> list[dict]:
-        rows = await asyncio.to_thread(
-            self._read, "SELECT * FROM hitl_approvals WHERE status = ? ORDER BY created_at DESC", (status,)
-        )
-        return [dict(r) for r in rows]
+    async def list_approvals(self, status: Optional[str] = None, limit: int = 200) -> list[dict]:
+        """Pending + historical HITL approvals, newest first (request/payload JSON decoded)."""
+        if status is None:
+            sql, params = "SELECT * FROM hitl_approvals ORDER BY created_at DESC, rowid DESC LIMIT ?", (limit,)
+        else:
+            sql = "SELECT * FROM hitl_approvals WHERE status = ? ORDER BY created_at DESC, rowid DESC LIMIT ?"
+            params = (status, limit)
+        rows = await asyncio.to_thread(self._read, sql, params)
+        out = []
+        for r in rows:
+            item = dict(r)
+            item["canonical_payload"] = json.loads(item["canonical_payload_json"])
+            item["request"] = json.loads(item.pop("request_json"))
+            out.append(item)
+        return out
 
     # ------------------------------------------------------------------ metrics
     def _metrics_sync(self, agent_id: Optional[str], policy: PolicyConfig, policy_filter: Optional[str]) -> MetricsSummary:

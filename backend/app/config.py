@@ -26,6 +26,18 @@ class Settings(BaseSettings):
     gcp_region: str = "asia-south1"
     cors_origins: list[str] = ["http://localhost:3000", "http://127.0.0.1:3000"]
 
+    # Google AI (Slice 2)
+    gemini_api_key: str = ""
+    layer2_enabled: bool = True
+    l2_auditor_model: str = "gemini-3.5-flash-lite"
+    l2_text_timeout_s: float = 2.5  # CLAUDE.md invariant 8: >2.5s → fail-closed ESCALATE
+    l2_multimodal_timeout_s: float = 4.0
+    l2_service_tier: str = ""  # "" = API default; "priority" lowers latency on paid tiers (billed at premium)
+    policy_compiler_model: str = "gemini-3.6-flash"
+    policy_compiler_fallback_model: str = "gemini-3.5-flash-lite"
+    embedding_model: str = "gemini-embedding-2"
+    policy_embeddings_cache_path: str = str(BACKEND_DIR / "policy_embeddings_cache.json")
+
 
 @lru_cache
 def get_settings() -> Settings:
