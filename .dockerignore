@@ -1,0 +1,20 @@
+# Applies to the backend image (built from the repo root: docker build -f backend/Dockerfile .)
+.git
+.claude
+.env
+.env.*
+**/.env.local
+*.pem
+*service-account*.json
+backend/.venv
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/*.db
+**/*.db-wal
+**/*.db-shm
+**/*.sqlite3
+frontend
+README.md
+deploy.ps1
+cloudbuild.*.yaml

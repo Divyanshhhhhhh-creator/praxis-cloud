@@ -12,6 +12,12 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["--prefix", "frontend", "run", "dev"],
       "port": 3000
+    },
+    {
+      "name": "praxis-frontend-standalone",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["frontend/.next/standalone/server.js"],
+      "port": 3000
     }
   ]
 }

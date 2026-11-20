@@ -1,0 +1,21 @@
+# Files NEVER uploaded to Cloud Build by `gcloud builds submit` (secrets, local state, heavy deps)
+.gcloudignore
+.git
+.gitignore
+.claude/
+.env
+.env.*
+**/.env.local
+*.pem
+*service-account*.json
+backend/.venv/
+**/__pycache__/
+**/*.pyc
+**/.pytest_cache/
+**/*.db
+**/*.db-wal
+**/*.db-shm
+**/*.sqlite3
+frontend/node_modules/
+frontend/.next/
+frontend/out/

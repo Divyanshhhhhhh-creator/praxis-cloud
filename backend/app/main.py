@@ -94,6 +94,29 @@ def build_gemini_services(settings: Settings, storage: StorageRepository):
     return auditor, compiler
 
 
+def build_storage(settings: Settings) -> StorageRepository:
+    """STORAGE_BACKEND factory: SQLite locally (no GCP creds needed), Firestore on Cloud Run."""
+    if settings.storage_backend == "firestore":
+        from .adapters.firestore_storage import FirestoreRepository  # lazy: GCP libs only when selected
+
+        return FirestoreRepository(project=settings.gcp_project_id or None, database=settings.firestore_database)
+    return SQLiteRepository(settings.praxis_db_path)
+
+
+def build_audit_sink(settings: Settings):
+    """AUDIT_BACKEND factory: None (primary store only) or a non-blocking BigQuery mirror."""
+    if settings.audit_backend != "bigquery":
+        return None
+    from .adapters.bigquery_audit import BigQueryAuditSink
+
+    return BigQueryAuditSink(
+        project=settings.gcp_project_id or None,
+        dataset=settings.bigquery_dataset,
+        table=settings.bigquery_table,
+        location=settings.gcp_region,
+    )
+
+
 def create_app(
     *,
     settings: Optional[Settings] = None,
@@ -104,7 +127,12 @@ def create_app(
     agent_runner: Any = _AUTO,
 ) -> FastAPI:
     settings = settings or get_settings()
-    storage = storage or SQLiteRepository(settings.praxis_db_path)
+    storage = storage or build_storage(settings)
+    audit_sink = build_audit_sink(settings)
+    if audit_sink is not None:
+        from .adapters.bigquery_audit import AuditMirroringStorage
+
+        storage = AuditMirroringStorage(storage, audit_sink)  # every saved audit is mirrored, never blocking
     vault = vault or PaymentVault()
     if layer2_auditor is _AUTO or policy_compiler is _AUTO:
         auto_auditor, auto_compiler = build_gemini_services(settings, storage)
@@ -124,14 +152,18 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
+        if audit_sink is not None:
+            await audit_sink.start()  # creates dataset/table if absent; disables itself on any failure
         if layer2_auditor is not None and hasattr(layer2_auditor, "warmup"):
             try:  # build Policy RAG index + prime the Gemini connection so the first audit isn't cold
                 await asyncio.wait_for(layer2_auditor.warmup(), timeout=WARMUP_TIMEOUT_S)
             except Exception as exc:  # never block startup; audits fail closed if Gemini is down
                 log.warning("Layer 2 warm-up failed: %s", exc)
         yield
+        if audit_sink is not None:
+            await audit_sink.drain()
 
-    app = FastAPI(title="Praxis Vaulted Execution Proxy", version="0.3.0", lifespan=lifespan)
+    app = FastAPI(title="Praxis Vaulted Execution Proxy", version="0.6.0", lifespan=lifespan)
     app.state.settings, app.state.storage, app.state.vault, app.state.proxy = settings, storage, vault, proxy
     app.state.layer2_auditor, app.state.policy_compiler = layer2_auditor, policy_compiler
     app.state.hitl, app.state.agent_runner = hitl, agent_runner
@@ -157,15 +189,30 @@ def create_app(
 
     @app.get("/health")
     async def health():
+        # Booleans and model ids only — never key material.
         return {
             "status": "ok",
             "service": "praxis-proxy",
+            "version": app.version,
             "storage_backend": settings.storage_backend,
+            "audit_backend": settings.audit_backend,
+            "audit_sink": audit_sink.status() if audit_sink is not None else None,
+            "gcp_region": settings.gcp_region,
+            "region": settings.gcp_region,
+            "razorpay_configured": vault.is_configured,
             "payment_vault": {"configured": vault.is_configured, "test_mode": vault.is_test_mode, "rail": "razorpay_test_mode"},
+            "models": {
+                "l2_auditor": settings.l2_auditor_model,
+                "policy_compiler": settings.policy_compiler_model,
+                "policy_compiler_fallback": settings.policy_compiler_fallback_model,
+                "embedding": settings.embedding_model,
+                "adk_agent": settings.agent_model,
+            },
             "layer2_auditor": getattr(layer2_auditor, "model", None) or "disabled",
             "policy_compiler": getattr(policy_compiler, "model", None) or "disabled",
             "adk_agent": getattr(agent_runner, "model", None) or "disabled",
-            "region": settings.gcp_region,
+            "l2_budget_s": {"text": settings.l2_text_timeout_s, "multimodal": settings.l2_multimodal_timeout_s},
+            "cors_origins": settings.cors_origins,
         }
 
     @app.post("/v1/intercept", response_model=AuditDecision, dependencies=[Depends(require_agent_token)])

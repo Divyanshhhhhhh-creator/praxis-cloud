@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -21,10 +22,22 @@ class Settings(BaseSettings):
 
     praxis_agent_token: str = ""
     praxis_db_path: str = str(BACKEND_DIR / "praxis.db")
-    storage_backend: str = "sqlite"
     gcp_project_id: str = ""
     gcp_region: str = "asia-south1"
-    cors_origins: list[str] = ["http://localhost:3000", "http://127.0.0.1:3000"]
+
+    # Storage & audit backends (Slice 6). Local defaults need no GCP credentials.
+    storage_backend: Literal["sqlite", "firestore"] = "sqlite"
+    audit_backend: Literal["sqlite", "bigquery"] = "sqlite"  # bigquery = primary store + BigQuery mirror
+    firestore_database: str = "(default)"
+    bigquery_dataset: str = "praxis_audit"
+    bigquery_table: str = "audit_decisions"
+
+    # Comma-separated CORS allow-list (env ALLOWED_ORIGINS), e.g. the deployed Cloud Run frontend URL.
+    allowed_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
+
+    @property
+    def cors_origins(self) -> list[str]:
+        return [o.strip().rstrip("/") for o in self.allowed_origins.split(",") if o.strip()]
 
     # Google AI (Slice 2)
     gemini_api_key: str = ""

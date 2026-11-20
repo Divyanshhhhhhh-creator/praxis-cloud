@@ -1,0 +1,10 @@
+# Cloud Build: praxis-backend image (context = repo root so backend/ + evals/ are both available)
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args: ["build", "-f", "backend/Dockerfile", "-t", "${_IMAGE}", "."]
+images: ["${_IMAGE}"]
+substitutions:
+  _IMAGE: ""
+options:
+  logging: CLOUD_LOGGING_ONLY
+timeout: 1800s

@@ -49,6 +49,33 @@ def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def budget_violations(usage: WindowUsage, policy: PolicyConfig, amount_inr: float) -> list[BudgetViolation]:
+    """Velocity + 1m/1h/24h sliding-cap rule shared by every storage adapter (SQLite, Firestore)."""
+    amount_paise = inr_to_paise(amount_inr)
+    violations: list[BudgetViolation] = []
+    if usage.calls_1m + 1 > policy.max_calls_per_min:
+        violations.append(
+            BudgetViolation(
+                POL_VELOCITY,
+                f"Velocity circuit-breaker: {usage.calls_1m + 1} calls in 60s exceeds "
+                f"max_calls_per_min={policy.max_calls_per_min}.",
+            )
+        )
+    for label, used, limit in (
+        ("1m", usage.used_1m_inr, policy.window_1m_inr),
+        ("1h", usage.used_1h_inr, policy.window_1h_inr),
+        ("24h", usage.used_24h_inr, policy.window_24h_inr),
+    ):
+        if inr_to_paise(used) + amount_paise > inr_to_paise(limit):
+            violations.append(
+                BudgetViolation(
+                    POL_SLIDING_CAP,
+                    f"Sliding {label} cap: ₹{used:,.2f} used + ₹{amount_inr:,.2f} requested exceeds ₹{limit:,.2f} limit.",
+                )
+            )
+    return violations
+
+
 class StorageRepository(ABC):
     """Persistence port for the proxy. All methods are async so cloud adapters plug in cleanly."""
 
@@ -332,29 +359,7 @@ class SQLiteRepository(StorageRepository):
         def _fn(conn):
             now = time.time()
             usage = self._window_usage(conn, agent_id, policy, now)
-            violations: list[BudgetViolation] = []
-            if usage.calls_1m + 1 > policy.max_calls_per_min:
-                violations.append(
-                    BudgetViolation(
-                        POL_VELOCITY,
-                        f"Velocity circuit-breaker: {usage.calls_1m + 1} calls in 60s exceeds "
-                        f"max_calls_per_min={policy.max_calls_per_min}.",
-                    )
-                )
-            for label, used, limit in (
-                ("1m", usage.used_1m_inr, policy.window_1m_inr),
-                ("1h", usage.used_1h_inr, policy.window_1h_inr),
-                ("24h", usage.used_24h_inr, policy.window_24h_inr),
-            ):
-                used_paise = inr_to_paise(used)
-                if used_paise + amount_paise > inr_to_paise(limit):
-                    violations.append(
-                        BudgetViolation(
-                            POL_SLIDING_CAP,
-                            f"Sliding {label} cap: ₹{used:,.2f} used + ₹{amount_inr:,.2f} requested "
-                            f"exceeds ₹{limit:,.2f} limit.",
-                        )
-                    )
+            violations = budget_violations(usage, policy, amount_inr)
             if violations and enforce:
                 return ReservationOutcome(ok=False, reservation_id=None, violations=violations, usage_before=usage)
             reservation_id = f"rsv_{uuid.uuid4().hex}"
