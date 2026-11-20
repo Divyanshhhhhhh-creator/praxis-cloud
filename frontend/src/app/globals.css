@@ -1,0 +1,113 @@
+@import "tailwindcss";
+
+/* ------------------------------------------------------------------ design tokens */
+@theme {
+  /* Marketing showcase (dark) */
+  --color-obsidian: #05070c;
+  --color-obsidian-2: #0a0e18;
+  --color-indigo-glow: #4f46e5;
+  --color-cyan-glow: #06b6d4;
+  --color-emerald-glow: #10b981;
+
+  /* Enterprise workspace (light) */
+  --color-canvas: #f8fafc;
+  --color-hairline: #e2e8f0;
+  --color-ink: #0f172a;
+  --color-ink-2: #334155;
+  --color-ink-3: #64748b; /* 4.76:1 on white — AA for body text */
+
+  /* Verdict semantics (fills/dots); text uses the -700 shades for AA contrast */
+  --color-allow: #059669;
+  --color-block: #dc2626;
+  --color-escalate: #d97706;
+  --color-shadowflag: #64748b;
+
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  --font-display: var(--font-display-face), var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains), ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --animate-spin-slow: spin 18s linear infinite;
+  --animate-spin-slower: spin 32s linear infinite;
+  --animate-spin-reverse: spin-reverse 24s linear infinite;
+  --animate-scan: scan 3.2s ease-in-out infinite;
+  --animate-pulse-ring: pulse-ring 2.4s ease-out infinite;
+
+  @keyframes spin-reverse {
+    to {
+      transform: rotate(-360deg);
+    }
+  }
+  @keyframes scan {
+    0%,
+    100% {
+      transform: translateY(0%);
+      opacity: 0;
+    }
+    10%,
+    90% {
+      opacity: 1;
+    }
+    50% {
+      transform: translateY(var(--scan-distance, 120px));
+    }
+  }
+  @keyframes pulse-ring {
+    0% {
+      transform: scale(0.85);
+      opacity: 0.7;
+    }
+    100% {
+      transform: scale(1.9);
+      opacity: 0;
+    }
+  }
+}
+
+html {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  font-family: var(--font-sans);
+}
+
+/* Financial figures, latencies, hashes, IDs */
+.figure {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1, "zero" 1;
+}
+
+/* Metallic headline treatment for the showcase */
+.text-metal {
+  background-image: linear-gradient(180deg, #ffffff 0%, #e2e8f0 38%, #94a3b8 72%, #cbd5e1 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.text-aurora {
+  background-image: linear-gradient(92deg, #818cf8 0%, #22d3ee 55%, #34d399 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* Fine grid used on the dark showcase */
+.bg-grid-dark {
+  background-image: linear-gradient(to right, rgb(148 163 184 / 0.06) 1px, transparent 1px),
+    linear-gradient(to bottom, rgb(148 163 184 / 0.06) 1px, transparent 1px);
+  background-size: 56px 56px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
