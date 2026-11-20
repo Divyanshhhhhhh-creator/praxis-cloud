@@ -43,6 +43,10 @@ class Settings(BaseSettings):
     praxis_reviewer_token: str = ""  # if set, POST /v1/approvals/{id}/decide requires X-Reviewer-Token
     demo_pdf_dir: str = str(ROOT_DIR / "evals" / "pdfs")
 
+    # Red-team benchmark (Slice 5)
+    evals_suite_path: str = str(ROOT_DIR / "evals" / "redteam_suite.py")
+    evals_results_path: str = str(ROOT_DIR / "evals" / "latest_benchmark_results.json")
+
 
 @lru_cache
 def get_settings() -> Settings:

@@ -260,3 +260,91 @@ export interface RbiIncidentReport {
   description: string;
   timeline: { timestamp: string; event: string }[];
 }
+
+/** GET /v1/approvals rows are enriched with the escalation audit (main.py join). */
+export interface ApprovalEscalation {
+  agent_id: string;
+  tool_name: string;
+  merchant_id: string;
+  amount_inr: number;
+  reason: string;
+  policy_citations: string[];
+  risk_score: number;
+  threat_category: string | null;
+  layer_decided: LayerDecided;
+  model_used: string | null;
+}
+export type ApprovalRow = ApprovalRecord & { escalation: ApprovalEscalation | null };
+
+// ------------------------------------------------------------------ red-team benchmark (evals/redteam_suite.py)
+export type EvalCaseKind = "attack" | "resilience" | "legit";
+export type EvalVerdict = Verdict | "ERROR" | "SKIPPED";
+
+export interface EvalCaseResult {
+  case_id: string;
+  title: string;
+  category: string;
+  kind: EvalCaseKind;
+  description: string;
+  expected_verdict: Verdict;
+  expected_layer: LayerDecided | null;
+  expected_citations: string[];
+  live_gemini: boolean;
+  actual_verdict: EvalVerdict;
+  actual_layer: LayerDecided | null;
+  passed: boolean;
+  citation_match: boolean;
+  risk_score: number | null;
+  l1_latency_ms: number;
+  l2_latency_ms: number;
+  wall_latency_ms: number;
+  policy_citations: string[];
+  threat_category: string | null;
+  invoice_extracted_total_inr: number | null;
+  model_used: string | null;
+  amount_inr: number;
+  executed: boolean;
+  money_moved_inr: number;
+  settlement_txn_id: string | null;
+  settlement_rail: string | null;
+  payload_sha256: string | null;
+  reason: string;
+  note: string;
+  error: string | null;
+}
+
+export interface EvalRun {
+  run_id: string;
+  timestamp: string;
+  duration_s: number;
+  engine: string;
+  l2_model: string;
+  embedding_model: string;
+  benchmark_eval_budget_s: number;
+  production_l2_budget_s: { text: number; multimodal: number };
+  pacing_s: number;
+  dry_run_settlement: boolean;
+  settlement_rail: string;
+  isolation: string;
+  live_gemini_cases: number;
+  warmup_error: string | null;
+  total_cases: number;
+  passed_cases: number;
+  failed_cases: number;
+  skipped_cases: number;
+  attack_cases: number;
+  attack_block_rate_pct: number;
+  threat_neutralization_rate_pct: number;
+  clean_cases: number;
+  clean_pass_rate_pct: number;
+  median_l1_ms: number;
+  median_l2_ms: number;
+  zero_money_leaked: boolean;
+  attack_money_leaked_inr: number;
+  attack_amount_neutralized_inr: number;
+  layer_breakdown: Partial<Record<LayerDecided, number>>;
+  defense_distribution: { bucket: string; count: number }[];
+  cases: EvalCaseResult[];
+}
+
+export type LatestEval = EvalRun | { status: "not_run_yet" };

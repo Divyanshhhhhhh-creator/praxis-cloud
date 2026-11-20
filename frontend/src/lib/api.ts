@@ -3,7 +3,7 @@
 import type {
   AgentRunRequest,
   AgentRunResult,
-  ApprovalRecord,
+  ApprovalRow,
   ApprovalStatus,
   AuditDecision,
   CompileRequest,
@@ -12,8 +12,10 @@ import type {
   DemoPdf,
   DemoResetRequest,
   DemoResetResponse,
+  EvalRun,
   HealthStatus,
   InterceptRequest,
+  LatestEval,
   MetricsSummary,
   PolicyConfig,
   RbiIncidentReport,
@@ -104,7 +106,7 @@ export const getAudits = (params: { limit?: number; agent_id?: string } = {}) =>
 export const getPolicies = () => request<PolicyConfig[]>("/v1/policies");
 
 export const getApprovals = (params: { status?: ApprovalStatus; limit?: number } = {}) =>
-  request<ApprovalRecord[]>("/v1/approvals", { query: params });
+  request<ApprovalRow[]>("/v1/approvals", { query: params });
 
 export const getDemoPdfs = () => request<DemoPdf[]>("/v1/demo/pdfs");
 
@@ -140,8 +142,25 @@ export const resetDemo = (body: DemoResetRequest = {}) =>
 export const upsertPolicy = (policy: PolicyConfig) =>
   request<PolicyConfig>(`/v1/policies/${encodeURIComponent(policy.policy_id)}`, { method: "PUT", json: policy });
 
-export const compilePolicy = (body: CompileRequest) =>
-  request<CompileResult>("/v1/policies/compile", { method: "POST", json: body, timeoutMs: 90_000 });
+/** PUT /v1/policies/{policy_id} */
+export const updatePolicy = (policyId: string, config: PolicyConfig) =>
+  request<PolicyConfig>(`/v1/policies/${encodeURIComponent(policyId)}`, { method: "PUT", json: config });
+
+/** POST /v1/policies/compile — gemini-3.6-flash (falls back to flash-lite); apply=false previews only. */
+export const compilePolicy = (instruction: string, policyId: string, apply = false) =>
+  request<CompileResult>("/v1/policies/compile", {
+    method: "POST",
+    json: { instruction, policy_id: policyId, apply } satisfies CompileRequest,
+    timeoutMs: 120_000,
+  });
+
+/** GET /v1/evals/latest — last persisted 12-case benchmark (or {status:"not_run_yet"}). */
+export const getLatestEval = () => request<LatestEval>("/v1/evals/latest");
+
+/** POST /v1/evals/run — runs the live 12-case red-team suite (~1–2 min on the free tier). */
+export const runRedTeamEval = () => request<EvalRun>("/v1/evals/run", { method: "POST", timeoutMs: 300_000 });
+
+export const isEvalRun = (x: LatestEval | null | undefined): x is EvalRun => !!x && "run_id" in x;
 
 // ------------------------------------------------------------------ helpers
 /** Fetch a demo invoice PDF and return its base64 (for the /v1/intercept attachment path). */

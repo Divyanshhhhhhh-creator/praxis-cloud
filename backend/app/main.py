@@ -6,7 +6,10 @@ import asyncio
 import base64
 import hashlib
 import hmac
+import importlib.util
+import json
 import logging
+import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal, Optional
@@ -192,7 +195,56 @@ def create_app(
         status: Optional[Literal["PENDING", "PROCESSING", "APPROVED", "REJECTED", "INTEGRITY_FAILED"]] = None,
         limit: int = Query(200, ge=1, le=1000),
     ):
-        return await storage.list_approvals(status=status, limit=limit)
+        rows = await storage.list_approvals(status=status, limit=limit)
+        for row in rows:  # join the escalation audit so reviewers see why it was held
+            audit = await storage.get_audit(row["audit_id"])
+            row["escalation"] = (
+                {
+                    "agent_id": audit.agent_id,
+                    "tool_name": audit.tool_name,
+                    "merchant_id": audit.merchant_id,
+                    "amount_inr": audit.amount_inr,
+                    "reason": audit.reason,
+                    "policy_citations": audit.policy_citations,
+                    "risk_score": audit.risk_score,
+                    "threat_category": audit.threat_category,
+                    "layer_decided": audit.layer_decided,
+                    "model_used": audit.model_used,
+                }
+                if audit
+                else None
+            )
+        return rows
+
+    # ------------------------------------------------------------------ red-team benchmark
+    results_path = Path(settings.evals_results_path)
+    eval_lock = asyncio.Lock()
+    suite_cache: dict[str, Any] = {}
+
+    def _load_suite():
+        if "mod" not in suite_cache:
+            spec = importlib.util.spec_from_file_location("praxis_redteam_suite", settings.evals_suite_path)
+            if spec is None or spec.loader is None:
+                raise HTTPException(status_code=503, detail="Red-team suite not found.")
+            mod = importlib.util.module_from_spec(spec)
+            sys.modules[spec.name] = mod  # dataclasses resolve annotations via sys.modules
+            spec.loader.exec_module(mod)
+            suite_cache["mod"] = mod
+        return suite_cache["mod"]
+
+    @app.get("/v1/evals/latest")
+    async def latest_eval():
+        if not results_path.is_file():
+            return {"status": "not_run_yet"}
+        return json.loads(results_path.read_text(encoding="utf-8"))
+
+    @app.post("/v1/evals/run")
+    async def run_eval():
+        if eval_lock.locked():
+            raise HTTPException(status_code=409, detail="A benchmark run is already in progress.")
+        async with eval_lock:
+            suite = _load_suite()
+            return await suite.run_benchmark(settings, results_path=results_path)
 
     @app.post(
         "/v1/approvals/{approval_id}/decide",
