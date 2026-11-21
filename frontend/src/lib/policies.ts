@@ -9,7 +9,7 @@ export interface PolicyMeta {
 export const POLICY_CATALOG: Record<string, PolicyMeta> = {
   "POL-FIN-ALLOWLIST": { title: "Tool & merchant allowlist", layer: "L1" },
   "POL-RBI-COOLING-12H": { title: "12-hour contact-change cooling", layer: "L1", reference: "RBI/DPSS/2026-27/475" },
-  "POL-RBI-PA-REFUND-01": { title: "Refund to original payment source", layer: "L1", reference: "RBI/DPSS/2025-26/141" },
+  "POL-RBI-PA-REFUND-01": { title: "Refund to original payment source", layer: "L1", reference: "RBI/DPSS/2025-26/141 (issued 15 Sep 2025, updated 11 Nov 2026)" },
   "POL-FIN-MAX-TXN": { title: "Hard single-transaction cap", layer: "L1" },
   "POL-FIN-VELOCITY": { title: "Velocity circuit-breaker", layer: "L1" },
   "POL-FIN-SLIDING-CAP": { title: "1m / 1h / 24h sliding spend cap", layer: "L1" },

@@ -2,7 +2,9 @@
 
 import { useEffect, useState } from "react";
 import { Download, FlaskConical, LoaderCircle, Play, ShieldCheck, TriangleAlert } from "lucide-react";
-import { errorMessage, getLatestEval, isEvalRun, runRedTeamEval } from "@/lib/api";
+import { actionError, errorMessage, getLatestEval, isEvalRun, runRedTeamEval } from "@/lib/api";
+import { ReviewerRequiredBadge } from "@/components/workspace/ReviewerAuth";
+import { REVIEWER_REQUIRED_TEXT } from "@/lib/reviewer";
 import { useElapsed } from "@/lib/hooks";
 import { cn, formatDateTime, formatINR, formatMs } from "@/lib/format";
 import type { EvalRun } from "@/lib/types";
@@ -59,7 +61,7 @@ export default function EvalsPage() {
       setState("ready");
       toast.show(`Benchmark ${r.run_id} complete — ${r.passed_cases}/${r.total_cases} passed in ${r.duration_s}s.`);
     } catch (e) {
-      setRunError(errorMessage(e));
+      setRunError(actionError(e));
     } finally {
       setRunning(false);
     }
@@ -113,7 +115,7 @@ export default function EvalsPage() {
           Running 7 deterministic cases instantly, then 5 live Gemini cases sequentially with 1.5 s pacing (free-tier friendly). Typically 30–90 s.
         </p>
       )}
-      {runError && <p role="alert" className="rounded-lg bg-red-50 px-4 py-2.5 text-[13px] text-red-700">Benchmark failed: {runError}</p>}
+      {runError === REVIEWER_REQUIRED_TEXT ? <ReviewerRequiredBadge /> : runError && <p role="alert" className="rounded-lg bg-red-50 px-4 py-2.5 text-[13px] text-red-700">Benchmark failed: {runError}</p>}
 
       {state === "loading" ? (
         <div className="space-y-4" aria-hidden="true">

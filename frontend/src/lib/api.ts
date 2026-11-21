@@ -20,6 +20,7 @@ import type {
   PolicyConfig,
   RbiIncidentReport,
 } from "./types";
+import { REVIEWER_REQUIRED_TEXT, getReviewerToken, requestReviewerAuth } from "./reviewer";
 
 export const API_URL = (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000").replace(/\/+$/, "");
 const AGENT_TOKEN = process.env.NEXT_PUBLIC_AGENT_TOKEN ?? "";
@@ -39,6 +40,8 @@ interface RequestOptions {
   json?: unknown;
   query?: Record<string, string | number | undefined | null>;
   agentAuth?: boolean;
+  /** Mutating governance call: attach the session-only reviewer passcode as X-Reviewer-Token. */
+  reviewerAuth?: boolean;
   timeoutMs?: number;
 }
 
@@ -63,6 +66,10 @@ async function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
   const headers: Record<string, string> = { Accept: "application/json" };
   if (opts.json !== undefined) headers["Content-Type"] = "application/json";
   if (opts.agentAuth) headers["X-Agent-Token"] = AGENT_TOKEN;
+  if (opts.reviewerAuth) {
+    const reviewer = getReviewerToken();
+    if (reviewer) headers["X-Reviewer-Token"] = reviewer;
+  }
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? 15_000);
@@ -133,24 +140,26 @@ export const decideApproval = (
   request<AuditDecision>(`/v1/approvals/${encodeURIComponent(approvalId)}/decide`, {
     method: "POST",
     json: { decision, reviewer_id: reviewerId, note } satisfies DecideRequest,
+    reviewerAuth: true,
     timeoutMs: 60_000,
   });
 
 export const resetDemo = (body: DemoResetRequest = {}) =>
-  request<DemoResetResponse>("/v1/demo/reset", { method: "POST", json: body });
+  request<DemoResetResponse>("/v1/demo/reset", { method: "POST", json: body, reviewerAuth: true });
 
 export const upsertPolicy = (policy: PolicyConfig) =>
-  request<PolicyConfig>(`/v1/policies/${encodeURIComponent(policy.policy_id)}`, { method: "PUT", json: policy });
+  request<PolicyConfig>(`/v1/policies/${encodeURIComponent(policy.policy_id)}`, { method: "PUT", json: policy, reviewerAuth: true });
 
 /** PUT /v1/policies/{policy_id} */
 export const updatePolicy = (policyId: string, config: PolicyConfig) =>
-  request<PolicyConfig>(`/v1/policies/${encodeURIComponent(policyId)}`, { method: "PUT", json: config });
+  request<PolicyConfig>(`/v1/policies/${encodeURIComponent(policyId)}`, { method: "PUT", json: config, reviewerAuth: true });
 
 /** POST /v1/policies/compile — gemini-3.6-flash (falls back to flash-lite); apply=false previews only. */
 export const compilePolicy = (instruction: string, policyId: string, apply = false) =>
   request<CompileResult>("/v1/policies/compile", {
     method: "POST",
     json: { instruction, policy_id: policyId, apply } satisfies CompileRequest,
+    reviewerAuth: apply,
     timeoutMs: 120_000,
   });
 
@@ -158,7 +167,7 @@ export const compilePolicy = (instruction: string, policyId: string, apply = fal
 export const getLatestEval = () => request<LatestEval>("/v1/evals/latest");
 
 /** POST /v1/evals/run — runs the live 12-case red-team suite (~1–2 min on the free tier). */
-export const runRedTeamEval = () => request<EvalRun>("/v1/evals/run", { method: "POST", timeoutMs: 300_000 });
+export const runRedTeamEval = () => request<EvalRun>("/v1/evals/run", { method: "POST", timeoutMs: 300_000, reviewerAuth: true });
 
 export const isEvalRun = (x: LatestEval | null | undefined): x is EvalRun => !!x && "run_id" in x;
 
@@ -184,4 +193,18 @@ export function errorMessage(err: unknown): string {
   if (err instanceof ApiError) return err.status ? `${err.status} · ${err.message}` : err.message;
   if (err instanceof Error) return err.message;
   return String(err);
+}
+
+/** True when a protected governance endpoint rejected the call for a missing / wrong reviewer passcode. */
+export function isReviewerAuthError(err: unknown): boolean {
+  return err instanceof ApiError && err.status === 401;
+}
+
+/** Error text for a protected reviewer action; on 401 it also opens the header's Reviewer Auth prompt. */
+export function actionError(err: unknown): string {
+  if (isReviewerAuthError(err)) {
+    requestReviewerAuth();
+    return REVIEWER_REQUIRED_TEXT;
+  }
+  return errorMessage(err);
 }

@@ -45,7 +45,8 @@ def vault():
 
 def make_app(storage, vault, *, layer2_auditor=None, policy_compiler=None, agent_runner=None):
     """Layer 1 tests run with Layer 2 / ADK disabled (pure deterministic engine); live suites inject them."""
-    settings = Settings(praxis_agent_token=TEST_TOKEN, praxis_db_path=storage.db_path)
+    # reviewer RBAC disabled here on purpose; tests/test_reviewer_auth.py covers the configured-token path
+    settings = Settings(praxis_agent_token=TEST_TOKEN, praxis_db_path=storage.db_path, praxis_reviewer_token="")
     return create_app(
         settings=settings, storage=storage, vault=vault, layer2_auditor=layer2_auditor,
         policy_compiler=policy_compiler, agent_runner=agent_runner,

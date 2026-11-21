@@ -2,6 +2,7 @@
 
 import { useCallback, useMemo, useState } from "react";
 import {
+  actionError,
   errorMessage,
   fetchDemoPdfBase64,
   getApprovals,
@@ -234,7 +235,7 @@ export default function ConsolePage() {
       window.setTimeout(() => setResetFeedback(null), 5000);
       await refreshAll();
     } catch (e) {
-      setError(errorMessage(e));
+      setError(actionError(e));
     }
   };
 

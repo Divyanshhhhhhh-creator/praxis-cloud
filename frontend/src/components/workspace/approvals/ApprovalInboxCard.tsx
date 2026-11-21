@@ -2,7 +2,8 @@
 
 import { useState } from "react";
 import { BadgeCheck, ChevronDown, CircleCheck, CircleX, LoaderCircle, ShieldAlert } from "lucide-react";
-import { ApiError, decideApproval, errorMessage } from "@/lib/api";
+import { ApiError, actionError, decideApproval } from "@/lib/api";
+import { ActionError } from "../ReviewerAuth";
 import { cn, formatDateTime, formatINR, humanize } from "@/lib/format";
 import type { ApprovalRow, ApprovalStatus } from "@/lib/types";
 import { Button, MonoPill, PolicyChip } from "../ui";
@@ -39,7 +40,7 @@ export function ApprovalInboxCard({ row, onDecided }: { row: ApprovalRow; onDeci
       );
     } catch (e) {
       const conflict = e instanceof ApiError && e.status === 409;
-      setError(conflict ? `409 Conflict — ${e.message} The inbox has been refreshed.` : errorMessage(e));
+      setError(conflict ? `409 Conflict — ${e.message} The inbox has been refreshed.` : actionError(e));
       if (conflict) onDecided("");
     } finally {
       setBusy(null);
@@ -146,7 +147,7 @@ export function ApprovalInboxCard({ row, onDecided }: { row: ApprovalRow; onDeci
         ) : (
           <p className="text-[12.5px] text-ink-3">Settlement in progress…</p>
         )}
-        {error && <p role="alert" className="mt-3 rounded-md bg-red-50 px-3 py-2 text-[12.5px] text-red-700">{error}</p>}
+        <ActionError error={error} className="mt-3" />
       </div>
     </article>
   );

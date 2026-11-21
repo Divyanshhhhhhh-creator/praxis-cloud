@@ -1,5 +1,8 @@
 "use client";
 
+import { ReviewerRequiredBadge } from "../ReviewerAuth";
+import { REVIEWER_REQUIRED_TEXT } from "@/lib/reviewer";
+
 import { useCallback, useState } from "react";
 import {
   BadgeCheck,
@@ -294,6 +297,10 @@ export function VerdictInspector({
               <div className="h-16 animate-pulse rounded-xl bg-slate-100" />
               <div className="h-32 animate-pulse rounded-xl bg-slate-100" />
             </div>
+          </div>
+        ) : error === REVIEWER_REQUIRED_TEXT ? (
+          <div className="p-5">
+            <ReviewerRequiredBadge />
           </div>
         ) : error ? (
           <div className="p-5">

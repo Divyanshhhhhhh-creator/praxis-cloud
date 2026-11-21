@@ -2,6 +2,11 @@
 
 > **Give Your AI Agents Autonomy — Not a Blank Check.**
 
+**Live Deployed Demo:** [https://praxis-frontend-txzejfbbdq-el.a.run.app](https://praxis-frontend-txzejfbbdq-el.a.run.app) &nbsp;·&nbsp;
+**Live Console:** [https://praxis-frontend-txzejfbbdq-el.a.run.app/console](https://praxis-frontend-txzejfbbdq-el.a.run.app/console) &nbsp;·&nbsp;
+**API health:** [https://praxis-backend-txzejfbbdq-el.a.run.app/health](https://praxis-backend-txzejfbbdq-el.a.run.app/health)
+(Cloud Run · `asia-south1` Mumbai · Firestore + BigQuery · Razorpay Test Mode)
+
 Praxis is an institutional governance firewall between autonomous AI agents (Google ADK) and live payment
 rails (Razorpay Test Mode). Every refund and vendor payout an agent proposes is sealed with SHA-256, checked by a
 sub-millisecond deterministic treasury engine with RBI November 2026 guards, audited by a grounded multimodal
@@ -77,8 +82,8 @@ Real `ProxyService` + live Gemini, isolated ledger, dry-run settlement — run `
 | Requirement | Circular | Praxis control |
 |---|---|---|
 | 12-hour cooling after mobile / email change before online payouts | `RBI/DPSS/2026-27/475` (5 Nov 2026) | Layer 1 `POL-RBI-COOLING-12H` — deterministic, < 0.03 ms; floor cannot be lowered by the policy compiler |
-| Refunds only to the original payment source | `RBI/DPSS/2025-26/141` (PA Master Direction, 11 Nov 2026) | Layer 1 `POL-RBI-PA-REFUND-01` — most-restrictive destination wins; locked in Policy Studio |
-| Immutable 5-year audit trail with payload hash and rationale | `RBI/DPSS/2026-27/475` | `POL-RBI-AUDIT-5Y` — every decision stored with SHA-256 + reason; BigQuery day-partitioned mirror in `asia-south1` |
+| Refunds only to the original payment source | `RBI/DPSS/2025-26/141` (PA Master Direction; issued 15 Sep 2025, updated 11 Nov 2026) | Layer 1 `POL-RBI-PA-REFUND-01` — most-restrictive destination wins; locked in Policy Studio |
+| Centralised audit logs (5-yr BigQuery retention) with payload hash and rationale | `RBI/DPSS/2026-27/475` | `POL-RBI-AUDIT-5Y` — every decision stored with SHA-256 + reason; BigQuery day-partitioned mirror in `asia-south1` |
 | 6-hour cyber / fraud incident reporting | `RBI/DPSS/2026-27/475` · CERT-In | `GET /v1/audits/{id}/rbi-incident-report` → Annex-1 JSON with deadline, severity, timeline |
 | Data residency | — | Cloud Run, Firestore and BigQuery pinned to `asia-south1` (Mumbai) |
 
@@ -89,7 +94,7 @@ Real `ProxyService` + live Gemini, isolated ledger, dry-run settlement — run `
 From the reusable Agent Skill ([`backend/app/agent/SKILL.md`](backend/app/agent/SKILL.md)):
 
 ```python
-praxis = PraxisHttpProxy("https://praxis-backend-xyz-el.a.run.app", agent_token=os.environ["PRAXIS_AGENT_TOKEN"])
+praxis = PraxisHttpProxy("https://praxis-backend-txzejfbbdq-el.a.run.app", agent_token=os.environ["PRAXIS_AGENT_TOKEN"])
 agent = LlmAgent(name="ops", model="gemini-3.5-flash-lite", tools=[issue_customer_refund, pay_vendor_invoice],
                  before_tool_callback=create_praxis_before_tool_callback(praxis))
 ```
@@ -136,9 +141,16 @@ BigQuery in `asia-south1`, builds both images with Cloud Build (no local Docker)
 .\deploy.ps1
 ```
 
+To turn on treasury-reviewer RBAC, set a passcode in the shell (never in `.env.local` or any `NEXT_PUBLIC_*`
+variable) before deploying; it is stored only in Secret Manager and kept mounted on later redeploys:
+
+```powershell
+$env:PRAXIS_REVIEWER_TOKEN = "<choose-a-passcode>"; .\deploy.ps1
+```
+
 | Flag | Effect |
 |---|---|
-| *(none)* | `STORAGE_BACKEND=firestore`, `AUDIT_BACKEND=bigquery`, backend min 1 / max 5 instances |
+| *(none)* | `STORAGE_BACKEND=firestore`, `AUDIT_BACKEND=bigquery`, backend min 1 / max 1 instance (idempotency single-flight is in-process) |
 | `-SqliteMode` | Fast fallback before Firestore exists: in-container SQLite, pinned to 1 instance so atomic caps stay correct |
 | `-DryRun` | Print every step and command (secrets masked), change nothing |
 
@@ -176,8 +188,11 @@ evals/                  12-case red-team suite, PDF invoice fixtures, latest res
 
 ## Known limitations
 
-- Demo endpoints (`/v1/agent/run`, `/v1/demo/reset`, policy writes, approvals without `PRAXIS_REVIEWER_TOKEN`) are
-  unauthenticated, and the console embeds the agent token at build time — fine for a Razorpay **test-mode** demo,
-  not for production money.
-- The Firestore adapter is implemented against the same storage contract and offline-tested for interface
-  completeness; it is exercised live once the project has billing enabled.
+- Treasury-reviewer RBAC: when `PRAXIS_REVIEWER_TOKEN` is set (Secret Manager on Cloud Run), approve / reject,
+  `/v1/demo/reset`, `PUT /v1/policies/{id}`, `POST /v1/policies/compile` with `apply=true` and `POST /v1/evals/run`
+  return `401` unless the `X-Reviewer-Token` header matches. The console asks for the passcode via **Reviewer Auth**
+  and keeps it only in the tab's `sessionStorage` — it is never bundled. Read paths, compile previews and
+  `/v1/agent/run` stay open for the demo, and the console still embeds the *agent* token at build time — fine for a
+  Razorpay **test-mode** demo, not for production money.
+- The backend runs as a single Cloud Run instance (`--max-instances=1`): budget windows are atomic Firestore
+  transactions, but idempotency single-flight is in-process, so horizontal scale-out needs a Firestore-backed lock.

@@ -6,6 +6,7 @@ import { ArrowUpRight } from "lucide-react";
 import { getApprovals, getHealth } from "@/lib/api";
 import { usePolling } from "@/lib/hooks";
 import { cn } from "@/lib/format";
+import { ReviewerAuthButton } from "./ReviewerAuth";
 
 const TABS = [
   { href: "/console", label: "Live Console" },
@@ -81,7 +82,8 @@ export function AppHeader() {
         </nav>
 
         {/* right: health + landing */}
-        <div className="ml-auto flex items-center gap-4 md:ml-0">
+        <div className="ml-auto flex items-center gap-3 md:ml-0">
+          <ReviewerAuthButton />
           <span className="flex items-center gap-1.5 whitespace-nowrap text-[13px] text-ink-2" title={health.error ?? health.data?.service}>
             <span
               className={cn("size-2 rounded-full", online ? "bg-allow" : health.loading ? "bg-slate-300" : "bg-block")}

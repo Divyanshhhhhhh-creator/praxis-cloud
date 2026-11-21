@@ -3,7 +3,7 @@
 Ordered, short-circuiting checks (enforce mode) — cheapest first, ledger last:
   1. Tool + merchant allowlists                           POL-FIN-ALLOWLIST
   2. RBI 5 Nov 2026 12h contact-change cooling guard     POL-RBI-COOLING-12H  (RBI/DPSS/2026-27/475)
-  3. RBI PA refund-to-original-source rule               POL-RBI-PA-REFUND-01 (RBI/DPSS/2025-26/141)
+  3. RBI PA refund-to-original-source rule               POL-RBI-PA-REFUND-01 (RBI/DPSS/2025-26/141, issued 15 Sep 2025, updated 11 Nov 2026)
   4. Hard single-transaction cap                         POL-FIN-MAX-TXN
   5. Atomic velocity + 1m/1h/24h sliding reservation     POL-FIN-VELOCITY / POL-FIN-SLIDING-CAP
 
@@ -104,7 +104,7 @@ class Layer1Engine:
             if flag(
                 POL_RBI_PA_REFUND,
                 f"Refund destination '{req.destination_mode}' violates refund-to-original-source rule "
-                f"({RBI_PA_MASTER_DIRECTION}, updated 11 Nov 2026).",
+                f"({RBI_PA_MASTER_DIRECTION}, issued 15 Sep 2025, updated 11 Nov 2026).",
             ):
                 return finish()
 

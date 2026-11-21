@@ -18,7 +18,7 @@ POL_FAIL_CLOSED = "POL-FIN-FAIL-CLOSED"
 
 # Regulatory circular references
 RBI_CYBER_RESILIENCE_CIRCULAR = "RBI/DPSS/2026-27/475"  # 5 Nov 2026 – 12h contact-change cooling
-RBI_PA_MASTER_DIRECTION = "RBI/DPSS/2025-26/141"  # PA Master Direction (refund-to-source, updated 11 Nov 2026)
+RBI_PA_MASTER_DIRECTION = "RBI/DPSS/2025-26/141"  # PA Master Direction (refund-to-source; issued 15 Sep 2025, updated 11 Nov 2026)
 
 POLICY_REFERENCES: dict[str, str] = {
     POL_RBI_COOLING: RBI_CYBER_RESILIENCE_CIRCULAR,

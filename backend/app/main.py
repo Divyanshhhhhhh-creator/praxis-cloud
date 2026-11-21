@@ -41,6 +41,7 @@ from .services.rbi_reporting import NotReportableError, build_rbi_incident_repor
 
 log = logging.getLogger("praxis.main")
 _AUTO: Any = object()  # sentinel: build from settings
+REVIEWER_401_DETAIL = "Treasury Reviewer Passcode Required (Protected Endpoint)."
 WARMUP_TIMEOUT_S = 30.0  # free-tier cold starts can exceed 50s; never block boot on it
 
 
@@ -182,10 +183,18 @@ def create_app(
         if not x_agent_token or not hmac.compare_digest(x_agent_token.encode(), expected.encode()):
             raise HTTPException(status_code=401, detail="Invalid or missing X-Agent-Token.")
 
-    def require_reviewer_token(x_reviewer_token: Optional[str] = Header(default=None)) -> None:
+    def check_reviewer_token(x_reviewer_token: Optional[str]) -> None:
+        """Treasury-reviewer RBAC for mutating governance endpoints.
+
+        Enforced whenever PRAXIS_REVIEWER_TOKEN is configured (always on Cloud Run). The token is never
+        shipped to the browser: reviewers type it once per session and the console sends it as a header.
+        """
         expected = settings.praxis_reviewer_token
         if expected and not (x_reviewer_token and hmac.compare_digest(x_reviewer_token.encode(), expected.encode())):
-            raise HTTPException(status_code=401, detail="Invalid or missing X-Reviewer-Token.")
+            raise HTTPException(status_code=401, detail=REVIEWER_401_DETAIL)
+
+    def require_reviewer_token(x_reviewer_token: Optional[str] = Header(default=None)) -> None:
+        check_reviewer_token(x_reviewer_token)
 
     @app.get("/health")
     async def health():
@@ -229,7 +238,9 @@ def create_app(
         return await storage.list_policies()
 
     @app.post("/v1/policies/compile", response_model=CompileResult)
-    async def compile_policy(body: CompileRequest):
+    async def compile_policy(body: CompileRequest, x_reviewer_token: Optional[str] = Header(default=None)):
+        if body.apply:  # previews stay open for anyone; applying a policy is a reviewer action
+            check_reviewer_token(x_reviewer_token)
         if policy_compiler is None:
             raise HTTPException(status_code=503, detail="Policy compiler unavailable (GEMINI_API_KEY not configured).")
         try:
@@ -285,7 +296,7 @@ def create_app(
             return {"status": "not_run_yet"}
         return json.loads(results_path.read_text(encoding="utf-8"))
 
-    @app.post("/v1/evals/run")
+    @app.post("/v1/evals/run", dependencies=[Depends(require_reviewer_token)])
     async def run_eval():
         if eval_lock.locked():
             raise HTTPException(status_code=409, detail="A benchmark run is already in progress.")
@@ -359,7 +370,7 @@ def create_app(
             raise HTTPException(status_code=404, detail="Unknown demo PDF.")
         return FileResponse(path, media_type="application/pdf", filename=name)
 
-    @app.put("/v1/policies/{policy_id}", response_model=PolicyConfig)
+    @app.put("/v1/policies/{policy_id}", response_model=PolicyConfig, dependencies=[Depends(require_reviewer_token)])
     async def put_policy(policy_id: str, policy: PolicyConfig):
         if policy.policy_id != policy_id:
             raise HTTPException(status_code=422, detail="Path policy_id must match body policy_id.")
@@ -383,7 +394,7 @@ def create_app(
     async def metrics(agent_id: Optional[str] = None, policy_id: Optional[str] = None):
         return await storage.get_metrics(agent_id=agent_id, policy_id=policy_id)
 
-    @app.post("/v1/demo/reset")
+    @app.post("/v1/demo/reset", dependencies=[Depends(require_reviewer_token)])
     async def demo_reset(body: Optional[DemoResetRequest] = None):
         body = body or DemoResetRequest()
         if body.windows_only:

@@ -2,7 +2,8 @@
 
 import { useState } from "react";
 import { ArrowRight, CircleCheck, LoaderCircle, Lock, Sparkles, Wand2 } from "lucide-react";
-import { compilePolicy, errorMessage, updatePolicy } from "@/lib/api";
+import { actionError, compilePolicy, errorMessage, updatePolicy } from "@/lib/api";
+import { ActionError } from "../ReviewerAuth";
 import { useElapsed } from "@/lib/hooks";
 import { cn, formatMs } from "@/lib/format";
 import type { CompileResult, PolicyConfig } from "@/lib/types";
@@ -78,7 +79,7 @@ export function PolicyCompiler({
       setResult(null);
       setInstruction("");
     } catch (e) {
-      setError(errorMessage(e));
+      setError(actionError(e));
     } finally {
       setBusy(null);
     }
@@ -133,7 +134,7 @@ export function PolicyCompiler({
           {busy === "compile" ? <LoaderCircle className="size-4 animate-spin" aria-hidden="true" /> : <Sparkles className="size-4" aria-hidden="true" />}
           {busy === "compile" ? `Compiling with Gemini… ${(elapsed / 1000).toFixed(1)} s` : "Compile Preview (Gemini 3.6 Flash)"}
         </Button>
-        {error && <p role="alert" className="rounded-md bg-red-50 px-3 py-2 text-[12.5px] text-red-700">{error}</p>}
+        <ActionError error={error} />
       </div>
 
       {result && (

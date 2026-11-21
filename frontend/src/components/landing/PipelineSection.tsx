@@ -19,7 +19,7 @@ const STAGES = [
     icon: Gauge,
     accent: "text-cyan-300",
     glow: "shadow-[0_0_50px_-14px_rgba(6,182,212,0.9)]",
-    points: ["<1 ms evaluation", "Atomic 1m / 1h / 24h spend caps", "RBI 12-hr cooling & original-source guards"],
+    points: ["<1 ms local checks · ~50 ms Firestore Tx", "Atomic 1m / 1h / 24h spend caps", "RBI 12-hr cooling & original-source guards"],
   },
   {
     n: "03",

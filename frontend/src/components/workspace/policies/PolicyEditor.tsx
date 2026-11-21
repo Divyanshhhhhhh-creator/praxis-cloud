@@ -2,7 +2,8 @@
 
 import { useMemo, useState } from "react";
 import { Lock, Plus, Save, ShieldCheck, TriangleAlert, X } from "lucide-react";
-import { errorMessage, updatePolicy } from "@/lib/api";
+import { actionError, updatePolicy } from "@/lib/api";
+import { ActionError } from "../ReviewerAuth";
 import { cn, formatINR } from "@/lib/format";
 import type { PolicyConfig } from "@/lib/types";
 import { Button, Card } from "../ui";
@@ -70,7 +71,7 @@ export function PolicyEditor({ policy, onSaved }: { policy: PolicyConfig; onSave
       const saved = await updatePolicy(policy.policy_id, next);
       onSaved(saved, `Saved ${saved.policy_id} — live on the next intercepted call.`);
     } catch (e) {
-      setError(errorMessage(e));
+      setError(actionError(e));
     } finally {
       setSaving(false);
     }
@@ -213,7 +214,7 @@ export function PolicyEditor({ policy, onSaved }: { policy: PolicyConfig; onSave
             </form>
           </div>
         </div>
-        {error && <p role="alert" className="rounded-md bg-red-50 px-3 py-2 text-[12.5px] text-red-700">{error}</p>}
+        <ActionError error={error} />
       </div>
 
       {/* RBI regulatory floor */}
@@ -238,6 +239,7 @@ export function PolicyEditor({ policy, onSaved }: { policy: PolicyConfig; onSave
               <ShieldCheck className="mt-0.5 size-4 shrink-0 text-emerald-700" aria-hidden="true" />
               <span>
                 <span className="figure font-medium text-ink">RBI/DPSS/2025-26/141</span>
+                <span className="text-ink-3"> (issued 15 Sep 2025, updated 11 Nov 2026)</span>
                 <span className="text-ink-2"> · Refunds only to the original payment source (</span>
                 <span className="figure text-ink">{policy.enforce_original_source_refund ? "enforced" : "OFF"}</span>
                 <span className="text-ink-2">)</span>

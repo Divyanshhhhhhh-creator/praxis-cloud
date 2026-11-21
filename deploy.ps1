@@ -81,6 +81,13 @@ try {
     Write-Step "Preflight ($ProjectId / $Region$(if ($SqliteMode) { ' / SQLITE MODE' }))"
     if (-not (Get-Command gcloud -ErrorAction SilentlyContinue)) { throw "gcloud CLI not found. Install https://cloud.google.com/sdk/docs/install" }
     $envVars = Read-DotEnv (Join-Path $Root ".env")
+    # Optional treasury-reviewer passcode (RBAC on decide / reset / policy writes / evals run). Taken from the
+    # process env (preferred, keeps it out of files) or .env; stored only in Secret Manager, never in the frontend.
+    $reviewerToken = if ($env:PRAXIS_REVIEWER_TOKEN) { $env:PRAXIS_REVIEWER_TOKEN } else { $envVars["PRAXIS_REVIEWER_TOKEN"] }
+    if ($reviewerToken) {
+        $envVars["PRAXIS_REVIEWER_TOKEN"] = $reviewerToken
+        $Secrets += "PRAXIS_REVIEWER_TOKEN"
+    }
     $script:MaskValues = @($Secrets | ForEach-Object { $envVars[$_] } | Where-Object { $_ })
     foreach ($name in $Secrets) {
         if (-not $SkipSecrets -and -not $envVars[$name]) { throw "Root .env is missing $name (needed to seed Secret Manager)." }
@@ -151,7 +158,7 @@ try {
         $storageBackend = "sqlite"; $auditBackend = "sqlite"; $maxInstances = "1"   # one ledger per instance => single instance
         Write-Step "SQLite fallback mode: skipping Firestore/BigQuery provisioning (max-instances=1)"
     } else {
-        $storageBackend = "firestore"; $auditBackend = "bigquery"; $maxInstances = "5"
+        $storageBackend = "firestore"; $auditBackend = "bigquery"; $maxInstances = "1"   # idempotency single-flight is in-process
         Write-Step "Firestore (native, $Region) and BigQuery dataset praxis_audit"
         if (-not (Test-Gcloud @("firestore", "databases", "describe", "--database=(default)"))) {
             Invoke-Gcloud -Arguments @("firestore", "databases", "create", "--database=(default)", "--location=$Region", "--type=firestore-native", "--quiet")
@@ -172,7 +179,12 @@ try {
     Write-Step "Building praxis-backend with Cloud Build"
     Invoke-Gcloud -Arguments @("builds", "submit", $Root, "--config=cloudbuild.backend.yaml", "--substitutions=_IMAGE=$BackendImage", "--quiet")
     Write-Step "Deploying praxis-backend to Cloud Run ($Region)"
-    $secretMap = ($Secrets | ForEach-Object { "$_=$($_):latest" }) -join ","
+    $secretNames = @($Secrets)
+    if (-not $reviewerToken -and (Test-Gcloud @("secrets", "describe", "PRAXIS_REVIEWER_TOKEN"))) {
+        $secretNames += "PRAXIS_REVIEWER_TOKEN"   # keep an already-provisioned reviewer passcode mounted on redeploy
+    }
+    $secretMap = ($secretNames | ForEach-Object { "$_=$($_):latest" }) -join ","
+    Write-Ok ("reviewer RBAC: " + $(if ($secretNames -contains "PRAXIS_REVIEWER_TOKEN") { "ON (PRAXIS_REVIEWER_TOKEN from Secret Manager)" } else { "OFF (no PRAXIS_REVIEWER_TOKEN)" }))
     Invoke-Gcloud -Arguments @("run", "deploy", "praxis-backend", "--image=$BackendImage", "--region=$Region", "--platform=managed",
         "--allow-unauthenticated", "--min-instances=1", "--max-instances=$maxInstances", "--cpu=1", "--memory=1Gi", "--port=8080",
         "--timeout=300", "--service-account=$RuntimeSa", "--set-secrets=$secretMap",

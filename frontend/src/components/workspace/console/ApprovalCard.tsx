@@ -3,7 +3,8 @@
 import { useState } from "react";
 import Link from "next/link";
 import { CircleCheck, CircleX, Hourglass, LoaderCircle } from "lucide-react";
-import { decideApproval, errorMessage } from "@/lib/api";
+import { actionError, decideApproval } from "@/lib/api";
+import { ActionError } from "../ReviewerAuth";
 import { formatINR } from "@/lib/format";
 import { CONSOLE_REVIEWER_ID } from "@/lib/scenarios";
 import type { AuditDecision } from "@/lib/types";
@@ -30,7 +31,7 @@ export function ApprovalCard({
     try {
       onDecided(await decideApproval(decision.approval_id, choice, CONSOLE_REVIEWER_ID, note));
     } catch (e) {
-      setError(errorMessage(e));
+      setError(actionError(e));
     } finally {
       setBusy(null);
     }
@@ -85,7 +86,7 @@ export function ApprovalCard({
           <p className="mt-2 text-[11.5px] text-ink-3">
             Approve re-verifies the sealed SHA-256 before settlement; a second decision returns 409. Reviewer: <span className="figure">{CONSOLE_REVIEWER_ID}</span>
           </p>
-          {error && <p role="alert" className="mt-2 rounded-md bg-red-50 px-3 py-2 text-[12.5px] text-red-700">{error}</p>}
+          <ActionError error={error} className="mt-2" />
         </div>
       )}
     </section>

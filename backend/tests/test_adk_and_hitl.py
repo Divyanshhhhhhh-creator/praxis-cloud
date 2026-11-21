@@ -50,7 +50,7 @@ async def hitl_client(storage, vault, auditor):
 @pytest.fixture
 async def adk_client(storage, vault, auditor):
     """App with the REAL ADK agent auto-built on the app's own ProxyService (L1 + live L2 + vault)."""
-    settings = Settings(praxis_agent_token=TEST_TOKEN, praxis_db_path=storage.db_path)
+    settings = Settings(praxis_agent_token=TEST_TOKEN, praxis_db_path=storage.db_path, praxis_reviewer_token="")
     app = create_app(settings=settings, storage=storage, vault=vault, layer2_auditor=auditor, policy_compiler=None)
     assert app.state.agent_runner is not None
     async with asgi_client(app) as c:
